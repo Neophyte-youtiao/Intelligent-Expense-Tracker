@@ -1,0 +1,7 @@
+{
+  "name": "SmartBook - Intelligent Expense Tracker",
+  "description": "A mobile-first expense tracker designed for Android. Features AI-powered WeChat Pay text parsing for quick entry, custom categories, and visual spending breakdowns.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
