@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Transaction, Category, TransactionType } from '../types';
 import { DynamicIcon } from './Icons';
 import { parseWeChatText, parseScreenshot, ParsedTransaction } from '../services/geminiService';
-import { Loader2, Sparkles, ClipboardPaste, Plus, Trash2, CheckCircle2, Image as ImageIcon, ArrowLeftRight, X, Save, History, Layers, AlertCircle, GitFork } from 'lucide-react';
+import { Loader2, Sparkles, ClipboardPaste, Plus, Trash2, CheckCircle2, Image as ImageIcon, ArrowLeftRight, X, Save, History, Layers, AlertCircle, GitFork, Lock } from 'lucide-react';
 
 interface AddTransactionProps {
   categories: Category[];
@@ -10,6 +10,7 @@ interface AddTransactionProps {
   onClose: () => void;
   initialSmartPaste?: boolean;
   recentTransactions?: Transaction[]; // For merge feature
+  hasApiKey?: boolean; // New prop to check mode
 }
 
 // Add tempId to track items before they are saved to DB
@@ -38,7 +39,8 @@ const AddTransaction: React.FC<AddTransactionProps> = ({
   onSave, 
   onClose, 
   initialSmartPaste = false,
-  recentTransactions = []
+  recentTransactions = [],
+  hasApiKey = false
 }) => {
   // Global Mode State
   const [batchMode, setBatchMode] = useState(false);
@@ -275,8 +277,6 @@ const AddTransaction: React.FC<AddTransactionProps> = ({
                 const sourceTypeName = sourceItem.type === 'income' ? '收入' : '支出';
                 const offsetNote = ` (抵扣${sourceTypeName} ${sourceItem.amount}: ${sourceItem.note})`;
 
-                // Note: Logic allows negative amounts for offset remainder handling in app state,
-                // but for batch edit we keep it simple. If negative, user sees 0 or negative.
                 updatedTarget = {
                     ...baseTarget,
                     amount: newTargetAmount > 0 ? newTargetAmount : 0,
@@ -440,6 +440,14 @@ const AddTransaction: React.FC<AddTransactionProps> = ({
         setIsParsing(false);
         alert("图片处理失败");
     }
+  };
+
+  const handleProtectedImageClick = () => {
+      if (hasApiKey) {
+          fileInputRef.current?.click();
+      } else {
+          alert("截图识别需要高级 AI 算力，请在【设置】中输入 Google Gemini API Key 以解锁此功能。(文本识别依然免费可用)");
+      }
   };
 
   // --- Render ---
@@ -723,7 +731,10 @@ const AddTransaction: React.FC<AddTransactionProps> = ({
                 <Sparkles size={16} />
             </div>
             <div className="flex-1">
-                <h3 className="text-sm font-bold text-emerald-800">智能导入 / 截图识别</h3>
+                <h3 className="text-sm font-bold text-emerald-800 flex items-center gap-2">
+                    智能文本识别
+                    {!hasApiKey && <span className="text-[10px] bg-emerald-200 text-emerald-800 px-1.5 py-0.5 rounded-full">免费版</span>}
+                </h3>
             </div>
         </div>
 
@@ -733,7 +744,7 @@ const AddTransaction: React.FC<AddTransactionProps> = ({
                     <textarea 
                         className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm focus:ring-2 focus:ring-primary focus:outline-none mb-2 min-h-[80px]"
                         rows={3}
-                        placeholder="在此粘贴文本..."
+                        placeholder="粘贴微信/支付宝账单文本..."
                         value={pasteText}
                         onChange={(e) => setPasteText(e.target.value)}
                     />
@@ -765,11 +776,12 @@ const AddTransaction: React.FC<AddTransactionProps> = ({
                         onChange={handleImageUpload}
                     />
                     <button 
-                        onClick={() => fileInputRef.current?.click()}
+                        onClick={handleProtectedImageClick}
                         disabled={isParsing}
-                        className="px-4 bg-white text-emerald-600 border border-emerald-200 rounded-lg py-2 text-sm font-medium flex items-center justify-center gap-2 hover:bg-emerald-50 disabled:opacity-50"
+                        className={`px-4 border rounded-lg py-2 text-sm font-medium flex items-center justify-center gap-2 transition-colors disabled:opacity-50 ${hasApiKey ? 'bg-white text-emerald-600 border-emerald-200 hover:bg-emerald-50' : 'bg-gray-100 text-gray-400 border-gray-200'}`}
+                        title={hasApiKey ? "上传截图" : "截图识别需配置Key"}
                     >
-                            <ImageIcon size={20} />
+                        {hasApiKey ? <ImageIcon size={20} /> : <Lock size={20} />}
                     </button>
                 </div>
             </div>

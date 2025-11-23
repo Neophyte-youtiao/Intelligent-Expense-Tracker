@@ -11,7 +11,7 @@ import TripView from './components/TripView';
 import { Transaction, Category, ViewState, UserProfile, Trip } from './types';
 import { DEFAULT_CATEGORIES } from './constants';
 import { Home, Settings as SettingsIcon, AlertTriangle } from 'lucide-react';
-import { getMonthlyInsight } from './services/geminiService';
+import { getMonthlyInsight, getEffectiveKey } from './services/geminiService';
 
 // Helper for local storage
 const useLocalStorage = <T,>(key: string, initialValue: T): [T, (value: T) => void] => {
@@ -47,6 +47,18 @@ function App() {
   
   // UI State
   const [transactionToDelete, setTransactionToDelete] = useState<string | null>(null);
+  const [hasApiKey, setHasApiKey] = useState(false);
+
+  // Function to refresh key status (passed to Settings)
+  const refreshKeyStatus = () => {
+    const key = getEffectiveKey();
+    setHasApiKey(!!key);
+  };
+
+  // Check for API Key on mount
+  useEffect(() => {
+    refreshKeyStatus();
+  }, []);
 
   // Data
   const [transactions, setTransactions] = useLocalStorage<Transaction[]>('transactions', []);
@@ -86,8 +98,6 @@ function App() {
                 const newAmount = t.amount - offsetAmount;
                 const offsetTypeStr = newTrans.type === 'income' ? '收入' : '支出';
                 if (newAmount <= 0) {
-                    // Fully offset (or more), mark as 0 or could delete. Keeping as 0 for history might be better, or delete.
-                    // Let's create a new updated transaction
                     return { ...t, amount: 0, note: `${t.note} (已全额抵扣: ${offsetTypeStr} ${offsetAmount})` };
                 } else {
                     return { ...t, amount: newAmount, note: `${t.note} (抵扣: ${offsetTypeStr} ${offsetAmount} ${notePrefix})` };
@@ -121,12 +131,10 @@ function App() {
     }
   };
 
-  // Trigger Delete Modal
   const requestDeleteTransaction = (id: string) => {
     setTransactionToDelete(id);
   };
 
-  // Confirm Delete
   const confirmDelete = () => {
     if (transactionToDelete) {
         setTransactions(transactions.filter(t => t.id !== transactionToDelete));
@@ -145,7 +153,6 @@ function App() {
     }
   };
 
-  // Trip CRUD
   const addTrip = (trip: Trip) => {
     setTrips([...trips, trip]);
   };
@@ -168,9 +175,8 @@ function App() {
         return d.getMonth() === now.getMonth() && t.type === 'expense';
     });
 
-    if (currentMonthT.length > 0 && process.env.API_KEY) {
+    if (currentMonthT.length > 0) {
         const total = currentMonthT.reduce((sum, t) => sum + t.amount, 0);
-        // Group by category name
         const catTotals: Record<string, number> = {};
         currentMonthT.forEach(t => {
             const catName = categories.find(c => c.id === t.categoryId)?.name || 'Other';
@@ -212,6 +218,7 @@ function App() {
                 onClose={() => setView('dashboard')}
                 initialSmartPaste={addMode === 'smart'}
                 recentTransactions={transactions}
+                hasApiKey={hasApiKey}
             />
         );
       case 'settings':
@@ -222,6 +229,7 @@ function App() {
                 onSetBackground={setBackgroundImg}
                 currentBackground={backgroundImg}
                 onClose={() => setView('dashboard')}
+                onApiKeyChange={refreshKeyStatus}
             />
         );
       case 'categories':
@@ -286,7 +294,6 @@ function App() {
         className="max-w-md mx-auto h-full shadow-2xl relative flex flex-col overflow-hidden transition-all duration-500 bg-gray-50 bg-cover bg-center"
         style={backgroundImg ? { backgroundImage: `url(${backgroundImg})` } : {}}
     >
-      
       {/* Main Content */}
       <div className="flex-1 overflow-hidden relative">
         {renderView()}

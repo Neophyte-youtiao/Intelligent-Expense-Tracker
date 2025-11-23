@@ -1,7 +1,7 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { Category } from '../types';
-import { DynamicIcon } from './Icons';
-import { Image, ChevronRight, Tags, ArrowLeft, Trash2, Upload, Loader2 } from 'lucide-react';
+import { Image, ChevronRight, Tags, ArrowLeft, Trash2, Upload, Loader2, Key, CheckCircle2, Zap } from 'lucide-react';
+import { getEffectiveKey } from '../services/geminiService';
 
 interface SettingsViewProps {
   categories: Category[];
@@ -9,6 +9,7 @@ interface SettingsViewProps {
   onSetBackground: (dataUrl: string | null) => void;
   currentBackground: string | null;
   onClose: () => void;
+  onApiKeyChange?: () => void; // New prop for syncing state
 }
 
 // Image compression helper
@@ -50,10 +51,41 @@ const SettingsView: React.FC<SettingsViewProps> = ({
   onManageCategories, 
   onSetBackground, 
   currentBackground,
-  onClose 
+  onClose,
+  onApiKeyChange
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false);
+  
+  // Key State
+  const [apiKey, setApiKey] = useState('');
+  const [hasKey, setHasKey] = useState(false);
+
+  useEffect(() => {
+    // Check effective key (Env or Local)
+    const effectiveKey = getEffectiveKey();
+    if (effectiveKey) {
+        setHasKey(true);
+        const stored = localStorage.getItem('user_api_key');
+        if (stored) setApiKey(stored);
+    }
+  }, []);
+
+  const handleSaveKey = () => {
+      if (!apiKey.trim()) return;
+      localStorage.setItem('user_api_key', apiKey.trim());
+      setHasKey(true);
+      onApiKeyChange?.(); // Refresh App state
+      alert("Key 已保存！截图识别功能已解锁。");
+  };
+
+  const handleClearKey = () => {
+      localStorage.removeItem('user_api_key');
+      setApiKey('');
+      setHasKey(false);
+      onApiKeyChange?.(); // Refresh App state
+      alert("Key 已移除，已切换回免费模式。");
+  };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -81,6 +113,53 @@ const SettingsView: React.FC<SettingsViewProps> = ({
 
        <div className="flex-1 overflow-y-auto p-4 space-y-6">
           
+          {/* API Key Section */}
+          <section>
+            <h2 className="text-xs font-bold text-gray-500 uppercase mb-3 ml-1">AI 引擎配置</h2>
+            <div className={`rounded-2xl p-4 shadow-sm border transition-colors ${hasKey ? 'bg-emerald-50 border-emerald-100' : 'bg-white border-white/40'}`}>
+                <div className="flex items-center gap-3 mb-3">
+                     <div className={`p-2 rounded-lg ${hasKey ? 'bg-emerald-200 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
+                        {hasKey ? <Zap size={20} fill="currentColor" /> : <Key size={20} />}
+                     </div>
+                     <div>
+                        <h3 className="font-medium text-gray-800 flex items-center gap-2">
+                            {hasKey ? 'Pro 模式 (已激活)' : '免费模式 (受限)'}
+                        </h3>
+                        <p className="text-xs text-gray-500">
+                            {hasKey ? '截图识别可用 · 极速响应' : '仅支持文本 · 无法截图识别'}
+                        </p>
+                     </div>
+                </div>
+                
+                <div className="space-y-3">
+                    {!hasKey ? (
+                        <div className="text-xs text-gray-500 bg-gray-50 p-2 rounded">
+                            提示：如需使用<b>截图识别</b>功能，请输入您的 Google Gemini API Key。免费模式下仅支持文本粘贴识别。
+                        </div>
+                    ) : null}
+                    
+                    <div className="flex gap-2">
+                        <input 
+                            type="password"
+                            value={apiKey}
+                            onChange={(e) => setApiKey(e.target.value)}
+                            placeholder={hasKey ? "Key 已配置 (隐藏)" : "在此输入 Gemini API Key"}
+                            className="flex-1 text-sm px-3 py-2 rounded-lg border border-gray-200 focus:outline-none focus:border-primary"
+                        />
+                        {hasKey ? (
+                            <button onClick={handleClearKey} className="bg-red-50 text-red-500 px-3 py-2 rounded-lg text-xs font-bold border border-red-100">
+                                清除
+                            </button>
+                        ) : (
+                            <button onClick={handleSaveKey} className="bg-gray-900 text-white px-4 py-2 rounded-lg text-xs font-bold">
+                                保存
+                            </button>
+                        )}
+                    </div>
+                </div>
+            </div>
+          </section>
+
           {/* Background Section */}
           <section>
             <h2 className="text-xs font-bold text-gray-500 uppercase mb-3 ml-1">外观</h2>

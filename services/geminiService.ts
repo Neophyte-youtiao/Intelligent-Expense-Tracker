@@ -1,6 +1,24 @@
 import { GoogleGenAI, Type } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Helper to get effective API Key (User > Dev Environment)
+export const getEffectiveKey = (): string | null => {
+  // 1. Check LocalStorage (User entered)
+  const userKey = localStorage.getItem('user_api_key');
+  if (userKey) return userKey;
+
+  // 2. Check Environment Variable (Developer provided)
+  // Note: Vite replaces process.env.API_KEY at build time
+  if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
+    return process.env.API_KEY;
+  }
+  
+  return null;
+};
+
+// Initialize the client
+const getAIClient = (apiKey: string) => {
+  return new GoogleGenAI({ apiKey });
+};
 
 export interface ParsedTransaction {
   amount: number;
@@ -43,47 +61,92 @@ const sanitizeResult = (transactions: ParsedTransaction[]): ParsedTransaction[] 
   }));
 };
 
-export const parseWeChatText = async (text: string): Promise<ParsedTransaction[]> => {
+// Helper to clean JSON from Free AI response (often wrapped in markdown)
+const cleanAndParseJSON = (text: string): any => {
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: `You are an expert financial assistant specialized in parsing transaction notifications from WeChat Pay (微信支付), Alipay (支付宝), or general text lists.
-      
-      Analyze the following text: "${text}"
-
-      Current Date Reference: ${new Date().toISOString().split('T')[0]}
-
-      Your task is to extract ONE OR MORE transactions into a JSON array.
-
-      Extraction Rules:
-      1. **Amount**: Extract numerical value. ALWAYS RETURN POSITIVE ABSOLUTE NUMBERS (e.g. if text is "-50", return 50).
-      2. **Merchant/Note**: Identify payee, product, or description.
-      3. **Category**: Infer ONE from: [Dining, Transport, Shopping, Entertainment, Housing, Medical, Salary, Other].
-      4. **Date**: YYYY-MM-DD. Use Current Date Reference if "Today" or missing.
-      5. **Multiple Items**: If the text contains a list (e.g., "Lunch 20, Taxi 15"), extract all of them.
-
-      Return JSON matching this schema:
-      {
-        "transactions": [
-           { "amount": number, "merchant": string, "categorySuggestion": string, "date": string | null }
-        ]
-      }`,
-      config: COMMON_CONFIG,
-    });
-
-    if (response.text) {
-      const result = JSON.parse(response.text) as ParseResult;
-      return sanitizeResult(result.transactions || []);
+    // 1. Try direct parse
+    return JSON.parse(text);
+  } catch (e) {
+    // 2. Try extracting from markdown code blocks ```json ... ```
+    const jsonMatch = text.match(/```json\s*([\s\S]*?)\s*```/) || text.match(/```\s*([\s\S]*?)\s*```/);
+    if (jsonMatch) {
+      try {
+        return JSON.parse(jsonMatch[1]);
+      } catch (e2) { /* ignore */ }
     }
-    return [];
+    // 3. Try finding the first { or [ and last } or ]
+    const firstBrace = text.search(/({|\[)/);
+    const lastBrace = text.search(/(}|])([^}\]]*)$/); // Find last closing brace
+    
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      try {
+          const substring = text.substring(firstBrace, lastBrace + 1);
+          return JSON.parse(substring);
+      } catch (e3) { /* ignore */ }
+    }
+    console.error("JSON Parse Failed:", text);
+    throw new Error("Could not parse JSON from AI response");
+  }
+};
+
+export const parseWeChatText = async (text: string): Promise<ParsedTransaction[]> => {
+  const apiKey = getEffectiveKey();
+
+  // --- PRO MODE (Google Gemini) ---
+  if (apiKey) {
+    try {
+      const ai = getAIClient(apiKey);
+      const response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: `You are an expert financial assistant. Analyze the following text: "${text}"
+        Current Date: ${new Date().toISOString().split('T')[0]}
+        Task: Extract transactions.
+        Rules:
+        1. Amount: Absolute positive number only.
+        2. Category: Infer one from [Dining, Transport, Shopping, Entertainment, Housing, Medical, Salary, Other].
+        3. Return JSON object with "transactions" array.`,
+        config: COMMON_CONFIG,
+      });
+
+      if (response.text) {
+        const result = JSON.parse(response.text) as ParseResult;
+        return sanitizeResult(result.transactions || []);
+      }
+    } catch (error) {
+      console.error("Gemini parsing failed, falling back to free mode...", error);
+    }
+  }
+
+  // --- FREE MODE (Pollinations AI) ---
+  try {
+    const prompt = `
+      You are an API that outputs strictly raw JSON. Do not output markdown.
+      Analyze: "${text}"
+      Date: ${new Date().toISOString().split('T')[0]}
+      Extract: amount (positive number), merchant, date (YYYY-MM-DD), category (Dining, Transport, Shopping, Entertainment, Housing, Medical, Salary, Other).
+      Format: {"transactions": [{"amount": 100, "merchant": "Taxi", "categorySuggestion": "Transport", "date": "2023-01-01"}]}
+    `;
+    const response = await fetch(`https://text.pollinations.ai/${encodeURIComponent(prompt)}`);
+    const rawText = await response.text();
+    const result = cleanAndParseJSON(rawText);
+    return sanitizeResult(result.transactions || []);
   } catch (error) {
-    console.error("Gemini parsing failed:", error);
+    console.error("Free AI parsing failed:", error);
     return [];
   }
 };
 
 export const parseScreenshot = async (base64Image: string, mimeType: string = 'image/jpeg'): Promise<ParsedTransaction[]> => {
+  const apiKey = getEffectiveKey();
+
+  if (!apiKey) {
+    console.warn("Screenshot parsing requires API Key (Pro Mode)");
+    return [];
+  }
+
+  // --- PRO MODE ONLY (Google Gemini) ---
   try {
+    const ai = getAIClient(apiKey);
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: {
@@ -95,19 +158,13 @@ export const parseScreenshot = async (base64Image: string, mimeType: string = 'i
             }
           },
           {
-            text: `Analyze this image (screenshot of a bill, receipt, or transaction log).
-            
-            Current Date Reference: ${new Date().toISOString().split('T')[0]}
-
-            Extract ALL visible transactions.
-            
+            text: `Analyze this bill/receipt image.
+            Current Date: ${new Date().toISOString().split('T')[0]}
+            Extract all transactions.
             Rules:
-            1. Extract the Amount. ALWAYS RETURN POSITIVE NUMBERS (Absolute Value). Ignore negative signs.
-            2. Extract the Merchant Name or Description as the 'merchant' field.
-            3. Infer the Category (Dining, Transport, Shopping, Entertainment, Housing, Medical, Salary, Other).
-            4. Extract Date if visible (YYYY-MM-DD), otherwise null.
-            
-            Return JSON.`
+            1. Amount: Absolute positive number only.
+            2. Category: Infer from [Dining, Transport, Shopping, Entertainment, Housing, Medical, Salary, Other].
+            Return JSON object with "transactions" array.`
           }
         ]
       },
@@ -119,89 +176,68 @@ export const parseScreenshot = async (base64Image: string, mimeType: string = 'i
       return sanitizeResult(result.transactions || []);
     }
     return [];
-  } catch (error) {
+  } catch (error: any) {
     console.error("Gemini image parsing failed:", error);
     return [];
   }
 };
 
 export const getMonthlyInsight = async (total: number, categories: {name: string, value: number}[]): Promise<string> => {
+  const apiKey = getEffectiveKey();
+  const prompt = `Analyze monthly spending: Total ${total}, Breakdown: ${JSON.stringify(categories)}. Give 1 encouraging sentence in Simplified Chinese. Max 20 words.`;
+
+  if (apiKey) {
+    try {
+        const ai = getAIClient(apiKey);
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+        });
+        return response.text || "继续保持！";
+    } catch (e) { console.error(e); }
+  }
+
   try {
-     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: `Analyze this monthly spending: Total: ${total}. Breakdown: ${JSON.stringify(categories)}.
-      Give a 1-sentence friendly summary/insight in Chinese (Simplified).
-      Example: "餐饮消费占比较高，下半月可以尝试在家做饭哦！" or "本月控制得很棒，继续保持！"
-      Keep it encouraging.`,
-    });
-    return response.text || "继续保持记录的好习惯！";
+      const res = await fetch(`https://text.pollinations.ai/${encodeURIComponent(prompt)}`);
+      return await res.text();
   } catch (e) {
-    return "消费记录看起来很棒！";
+      return "消费记录看起来很棒！";
   }
 }
 
 export const getBaziFortune = async (birthDate: string, birthTime: string, gender: string): Promise<any> => {
+  const apiKey = getEffectiveKey();
+  const today = new Date().toISOString().split('T')[0];
+  const systemPrompt = `你是一位八字命理大师。根据生辰(${birthDate} ${birthTime}, ${gender === 'male'?'男':'女'})推算${today}运势。
+  严格返回JSON格式(不要Markdown)，字段: overallScore(0-100), summary(20字内), luckyColor, luckyDirection, wealthTip, careerTip, loveTip。`;
+
+  if (apiKey) {
+    try {
+        const ai = getAIClient(apiKey);
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: systemPrompt,
+            config: { responseMimeType: "application/json" }
+        });
+        if (response.text) return JSON.parse(response.text);
+    } catch (e) { console.error(e); }
+  }
+
+  // Free Mode Fallback
   try {
-    const today = new Date().toISOString().split('T')[0];
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: `你是一位精通中国传统命理（八字、紫微斗数、风水）的大师。
-      
-      请根据用户的生辰八字，推算用户在 **${today}** 这一天的运势。
-      
-      用户信息：
-      - 出生日期：${birthDate}
-      - 出生时间：${birthTime}
-      - 性别：${gender === 'male' ? '男' : '女'}
-      
-      要求：
-      1. **语气**：专业、神秘但亲切，带有传统文化底蕴（如使用“今日气场”、“五行流转”等词汇）。
-      2. **内容**：需结合今日的干支与用户的八字进行简单的生克分析（模拟）。
-      3. **输出语言**：必须是**简体中文**。
-      
-      请返回如下 JSON 格式：
-      {
-        "overallScore": 0-100之间的整数 (今日运势评分),
-        "summary": "一句话运势总结 (20字以内)",
-        "luckyColor": "今日幸运色 (如：黛蓝)",
-        "luckyDirection": "今日财神/贵人方位 (如：正南方)",
-        "wealthTip": "财运建议 (针对今日)",
-        "careerTip": "事业/学业建议",
-        "loveTip": "感情建议"
-      }`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            overallScore: { type: Type.NUMBER },
-            summary: { type: Type.STRING },
-            luckyColor: { type: Type.STRING },
-            luckyDirection: { type: Type.STRING },
-            wealthTip: { type: Type.STRING },
-            careerTip: { type: Type.STRING },
-            loveTip: { type: Type.STRING }
-          },
-          required: ["overallScore", "summary", "luckyColor", "luckyDirection", "wealthTip", "careerTip", "loveTip"]
-        }
-      }
-    });
-    
-    if (response.text) {
-      return JSON.parse(response.text);
-    }
-    throw new Error("No response");
+      const res = await fetch(`https://text.pollinations.ai/${encodeURIComponent(systemPrompt)}`);
+      const text = await res.text();
+      return cleanAndParseJSON(text);
   } catch (e) {
-    console.error("Fortune telling failed", e);
-    // Fallback data in Chinese
-    return {
-      overallScore: 88,
-      summary: "紫气东来，今日运势上佳，宜积极进取。",
-      luckyColor: "朱红",
-      luckyDirection: "正南",
-      wealthTip: "正财稳健，偏财运平平，适合稳健理财。",
-      careerTip: "工作效率高，易得贵人相助，适合推进重要项目。",
-      loveTip: "桃花运旺，单身者通过聚会有机会结识良缘。"
-    };
+      console.error("Fortune failed", e);
+      return {
+          overallScore: 80,
+          summary: "今日运势平稳 (免费模式网络波动，请重试)",
+          luckyColor: "白色",
+          luckyDirection: "北方",
+          wealthTip: "宜保守",
+          careerTip: "宜静",
+          loveTip: "顺其自然"
+      };
   }
 }
